@@ -88,7 +88,7 @@ def load_ocr_dataset(**kwargs):
     all_labeled_images = glob.glob(os.path.join(dataset_dir, '*.jpg'))
     all_expr_images = glob.glob(os.path.join(expr_data_dir, '*.jpg'))
     global max_size
-    max_size = determine_largest_size(all_labeled_images + all_expr_images)
+    max_size = [60, 30] #determine_largest_size(all_labeled_images + all_expr_images)
     # global image_load_func
     # image_load_func = partial(load_and_preprocess_image, max_size=max_size)
 
@@ -103,8 +103,8 @@ def load_ocr_dataset(**kwargs):
             encode_target = []
             for i, c in enumerate(target):
                 encode_target.append(all_allowed_characters.index(c))
-            if i < max_size[0] - 1:
-                encode_target += [all_allowed_characters.index('!')] * (max_size[0] - 1 - i)
+            if i < 7 - 1:  # output length set to 15
+                encode_target += [all_allowed_characters.index('!')] * (7 - 1 - i)
             # this is to ensure all targets are of the same length
             all_targets.append(encode_target)
     all_targets = np.array(all_targets)

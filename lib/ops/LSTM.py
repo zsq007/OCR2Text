@@ -3,6 +3,7 @@ import numpy as np
 import lib.ops.Linear
 import warnings
 import functools
+from lib.ops.Conv2D import conv2d
 
 
 def deprecated(func):
@@ -217,7 +218,7 @@ def legacy_bilstm(name, hidden_units, inputs, keep_prob_ph):
 
 
 def attention(name, attention_size, inputs):
-    batch_size, nb_steps, nb_features = inputs.shape.as_list()
+    batch_size, width, height, nb_features = inputs.shape.as_list()
     with tf.variable_scope(name):
         context_vec = tf.tanh(
             lib.ops.Linear.linear('Context_Vector', nb_features, attention_size, tf.reshape(inputs, [-1, nb_features])))
@@ -229,24 +230,35 @@ def attention(name, attention_size, inputs):
         return output
 
 
-def self_attention(name, attention_size, inputs, use_conv=False):
-    batch_size, nb_steps, nb_features = inputs.shape.as_list()
+def sn_non_local_block_sim(name, inputs):
     with tf.variable_scope(name):
-        if use_conv:
-            func = functools.partial(lib.ops.Conv1D.conv1d, filter_size=1)
-        else:
-            func = lib.ops.Linear.linear
-        cv_f = func(name='Context_Vector_f', input_dim=nb_features, output_dim=attention_size, inputs=inputs)
-        cv_g = func(name='Context_Vector_g', input_dim=nb_features, output_dim=attention_size, inputs=inputs)
-        cv_h = func(name='Context_Vector_h', input_dim=nb_features, output_dim=nb_features, inputs=inputs)
+        batch_size, h, w, num_channels = inputs.get_shape().as_list()
+        location_num = h * w
 
-        sa_weights = tf.matmul(cv_f, cv_g, transpose_b=True)  # [batch_size, nb_steps, nb_steps]
-        sa_weights = tf.nn.softmax(sa_weights, axis=-1)[:, :, :, None]  # [batch_size, nb_steps, nb_steps]
+        # theta path
+        theta = conv2d('theta-1x1', num_channels, num_channels, 1, inputs)
+        theta = tf.reshape( theta, [-1, location_num, num_channels])
 
-        # tf.transpose(tf.reshape(cv_h, [batch_size, nb_steps, nb_features]), perm=[1, 2, 0])  #[nb_steps, nb_features, batch_size]
-        return tf.reduce_sum(sa_weights * tf.stack([cv_h] * nb_steps, axis=1),
-                             axis=2)  # [batch_size, nb_steps, nb_features]
+        # phi path
+        phi = conv2d('phi-1x1', num_channels, num_channels, 1, inputs)
+        # phi = tf.layers.max_pooling2d(inputs=phi, pool_size=[2, 2], strides=2)
+        phi = tf.reshape(phi, [-1, location_num, num_channels])
 
+
+        attn = tf.matmul(theta, phi, transpose_b=True) # [batch_size, location_num, downsampled_num]
+        attn = tf.nn.softmax(attn)
+
+        # g path
+        # g = conv2d('g-1x1', num_channels, num_channels, 1, inputs)
+        # g = tf.layers.max_pooling2d(inputs=g, pool_size=[2, 2], strides=2)
+        g = tf.reshape(inputs, [-1, location_num, num_channels])
+
+        attn_g = tf.matmul(attn, g) # [batch_size, location_num, num_channels]
+        attn_g = tf.reshape(attn_g, [-1, h, w, num_channels])
+        # sigma = tf.get_variable(
+        #     'sigma_ratio', [], initializer=tf.constant_initializer(0.0))
+        # attn_g = conv2d('recover-channel', num_channels, num_channels, 1, attn_g)
+        return attn_g
 
 if __name__ == "__main__":
     latent_encodings = np.random.randn(256, 128).astype(np.float32)

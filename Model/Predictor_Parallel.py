@@ -1,9 +1,8 @@
 import numpy as np
 import locale
 import os
-import time
-import matplotlib
 import sys
+from tqdm import tqdm
 import tensorflow as tf
 
 basedir = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0]
@@ -55,7 +54,7 @@ class Predictor:
         self.input_ph = tf.placeholder(tf.float32, shape=[None, *self.max_size, self.nb_emb])
         self.input_splits = tf.split(self.input_ph, len(self.gpu_device_list))
 
-        self.labels = tf.placeholder(tf.int32, shape=[None, self.max_size[0]])
+        self.labels = tf.placeholder(tf.int32, shape=[None, 7]) # two rounds of step 2 downsampling from an image of width 60
         self.labels_split = tf.split(self.labels, len(self.gpu_device_list))
 
         self.is_training_ph = tf.placeholder(tf.bool, ())
@@ -65,22 +64,23 @@ class Predictor:
         for i in range(self.nb_layers):
             if i == 0:
                 output = OptimizedResBlockDisc1(output, self.nb_emb, self.output_dim,
-                                                resample=self.resample)
+                                                resample=None)
             else:
                 output = resblock('ResBlock%d' % (i), self.output_dim, self.output_dim, self.filter_size, output,
-                                  self.resample, self.is_training_ph, use_bn=self.use_bn, r=self.residual_connection)
+                                  'down' if i %2 == 1 else None, self.is_training_ph, use_bn=self.use_bn, r=self.residual_connection)
+                # [60, 30] --> [30, 15] --> [15, 7] --> [7, 3]
+            if i % 2 == 1:
+                output = lib.ops.LSTM.sn_non_local_block_sim('self-attention', output)
 
         # aggregate conv feature maps
         output = tf.reduce_mean(output, axis=[2])  # more clever attention mechanism for weighting the contribution
 
         if self.use_lstm:
-            output = lib.ops.LSTM.bilstm('BILSTM', self.output_dim, output, self.max_size[0])
+            output = lib.ops.LSTM.bilstm('BILSTM', self.output_dim, output, tf.shape(output)[1])
 
         output = lib.ops.Linear.linear('AMOutput', self.output_dim * 2 if self.use_lstm else self.output_dim,
                                        self.nb_class, output)
-        # print(output.get_shape().as_list())
-        # exit()
-        # output = tf.reshape(output, [-1, self.max_size[0], self.nb_class])
+
         if not hasattr(self, 'output'):
             self.output = [output]
         else:
@@ -89,28 +89,23 @@ class Predictor:
     def _loss(self, type, split_idx):
         if type == 'CE':
             # compute a more efficient loss?
-            # print(self.output[split_idx].get_shape().as_list())
             cost = tf.reduce_mean(
-                tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.output[split_idx],
-                                                               labels=self.labels_split[split_idx]
-                                                               ))
+                tf.nn.softmax_cross_entropy_with_logits(logits=self.output[split_idx],
+                                                        labels=tf.one_hot(self.labels_split[split_idx],
+                                                                          depth=self.nb_class)
+                                                        ))
             prediction = tf.nn.softmax(self.output[split_idx], axis=-1)
         elif type == 'MSE':
             raise ValueError('MSE is not appropriate in this problem!')
         else:
             raise ValueError('%s doesn\'t supported. Valid options are \'CE\' and \'MSE\'.' % (type))
 
-        if not hasattr(self, 'prediction'):
-            self.prediction = [prediction]
-        else:
-            self.prediction += [prediction]
-
         # accuracy by comparing the modes
         char_acc = tf.reduce_mean(
             tf.cast(
                 tf.equal(
                     tf.to_int32(tf.argmax(self.output[split_idx], axis=-1)),
-                    tf.to_int32(tf.argmax(self.labels_split[split_idx], axis=-1))
+                    self.labels_split[split_idx]
                 ),
                 tf.float32
             )
@@ -121,7 +116,7 @@ class Predictor:
                 tf.cast(
                     tf.equal(
                         tf.to_int32(tf.argmax(self.output[split_idx], axis=-1)),
-                        tf.to_int32(tf.argmax(self.labels_split[split_idx], axis=-1))
+                        self.labels_split[split_idx]
                     ),
                     tf.float32
                 )
@@ -129,9 +124,11 @@ class Predictor:
         )
 
         if not hasattr(self, 'cost'):
-            self.cost, self.char_acc, self.sample_acc = [cost], [char_acc], [sample_acc]
+            self.cost, self.prediction, self.char_acc, self.sample_acc = \
+                [cost], [prediction], [char_acc], [sample_acc]
         else:
             self.cost += [cost]
+            self.prediction += [prediction]
             self.char_acc += [char_acc]
             self.sample_acc += [sample_acc]
 
@@ -254,8 +251,7 @@ class Predictor:
                 train_data = train_data[:-train_rmd]
                 train_targets = train_targets[:-train_rmd]
 
-            start_time = time.time()
-            for i in range(iters_per_epoch):
+            for i in tqdm(range(iters_per_epoch)):
                 _data, _labels = train_data[i * batch_size: (i + 1) * batch_size], \
                                  train_targets[i * batch_size: (i + 1) * batch_size]
 
