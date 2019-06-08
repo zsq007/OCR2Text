@@ -11,7 +11,7 @@ sys.path.append(basedir)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from lib.resutils import OptimizedResBlockDisc1, resblock, normalize
-import lib.ops.LSTM, lib.ops.Linear, lib.ops.Conv1D
+import lib.ops.LSTM, lib.ops.Linear
 import lib.plot
 
 
@@ -74,10 +74,13 @@ class Predictor:
         output = tf.reduce_mean(output, axis=[2])  # more clever attention mechanism for weighting the contribution
 
         if self.use_lstm:
-            output = lib.ops.LSTM.bilstm('BILSTM', self.output_dim, output, tf.shape(output)[1])
+            output = lib.ops.LSTM.bilstm('BILSTM', self.output_dim, output, self.max_size[0])
 
         output = lib.ops.Linear.linear('AMOutput', self.output_dim * 2 if self.use_lstm else self.output_dim,
                                        self.nb_class, output)
+        # print(output.get_shape().as_list())
+        # exit()
+        # output = tf.reshape(output, [-1, self.max_size[0], self.nb_class])
         if not hasattr(self, 'output'):
             self.output = [output]
         else:
@@ -86,10 +89,11 @@ class Predictor:
     def _loss(self, type, split_idx):
         if type == 'CE':
             # compute a more efficient loss?
+            # print(self.output[split_idx].get_shape().as_list())
             cost = tf.reduce_mean(
-                tf.nn.softmax_cross_entropy_with_logits_v2(logits=self.output[split_idx],
-                                                           labels=self.labels_split[split_idx]
-                                                           ))
+                tf.nn.sparse_softmax_cross_entropy_with_logits(logits=self.output[split_idx],
+                                                               labels=self.labels_split[split_idx]
+                                                               ))
             prediction = tf.nn.softmax(self.output[split_idx], axis=-1)
         elif type == 'MSE':
             raise ValueError('MSE is not appropriate in this problem!')
@@ -121,7 +125,7 @@ class Predictor:
                     ),
                     tf.float32
                 )
-            , axis=-1)
+                , axis=-1)
         )
 
         if not hasattr(self, 'cost'):

@@ -1,6 +1,6 @@
 import tensorflow as tf
 import numpy as np
-import lib.ops.Linear, lib.ops.BatchNorm, lib.ops.Conv1D
+import lib.ops.Linear
 import warnings
 import functools
 

@@ -30,8 +30,8 @@ use_bn = True
 use_lstm = True
 nb_layers = 4
 filter_size = 3
-output_dim = 128
-learning_rate = 4e-3
+output_dim = 32
+learning_rate = 2e-4
 
 HParams = ['arch', 'use_bn', 'use_lstm', 'nb_layers', 'filter_size', 'output_dim', 'learning_rate']
 metrics = ['cost', 'char_acc', 'sample_acc']
@@ -89,7 +89,6 @@ if FLAGS.use_cross_validation:
 else:
     # build model
     model = Predictor(lib.dataloader.max_size, N_EMB, N_CLASS, DEVICES, **hp)
-
     model.fit(dataset['train_images'], dataset['train_targets'], EPOCHS, BATCH_SIZE, output_dir)
 
     test_rmd = dataset['test_images'].shape[0] % len(DEVICES)
