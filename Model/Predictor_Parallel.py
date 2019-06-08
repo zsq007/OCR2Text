@@ -9,7 +9,8 @@ basedir = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0]
 sys.path.append(basedir)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from lib.resutils import OptimizedResBlockDisc1, resblock, normalize
+from lib.resutils import OptimizedResBlockDisc1, resblock
+from lib.RNN_Encoder_Decoder import BiLSTMEncoder, AttentionDecoder
 import lib.ops.LSTM, lib.ops.Linear
 import lib.plot
 
@@ -41,6 +42,8 @@ class Predictor:
                 with tf.device(device), tf.variable_scope('Classifier', reuse=tf.AUTO_REUSE):
                     if self.arch == 0:
                         self._build_residual_classifier(i)
+                    else:
+                        self._build_seq2seq(i)
                     self._loss('CE' if self.nb_class > 1 else 'MSE', i)
                     self._train(i)
             self._merge()
@@ -54,7 +57,8 @@ class Predictor:
         self.input_ph = tf.placeholder(tf.float32, shape=[None, *self.max_size, self.nb_emb])
         self.input_splits = tf.split(self.input_ph, len(self.gpu_device_list))
 
-        self.labels = tf.placeholder(tf.int32, shape=[None, 7]) # two rounds of step 2 downsampling from an image of width 60
+        self.labels = tf.placeholder(tf.int32,
+                                     shape=[None, 8])  # two rounds of step 2 downsampling from an image of width 60
         self.labels_split = tf.split(self.labels, len(self.gpu_device_list))
 
         self.is_training_ph = tf.placeholder(tf.bool, ())
@@ -67,10 +71,11 @@ class Predictor:
                                                 resample=None)
             else:
                 output = resblock('ResBlock%d' % (i), self.output_dim, self.output_dim, self.filter_size, output,
-                                  'down' if i %2 == 1 else None, self.is_training_ph, use_bn=self.use_bn, r=self.residual_connection)
+                                  'down' if i % 2 == 1 else None, self.is_training_ph, use_bn=self.use_bn,
+                                  r=self.residual_connection)
                 # [60, 30] --> [30, 15] --> [15, 7] --> [7, 3]
-            if i % 2 == 1:
-                output = lib.ops.LSTM.sn_non_local_block_sim('self-attention', output)
+            # if i % 2 == 1:
+            #     output = lib.ops.LSTM.sn_non_local_block_sim('self-attention', output)
 
         # aggregate conv feature maps
         output = tf.reduce_mean(output, axis=[2])  # more clever attention mechanism for weighting the contribution
@@ -80,6 +85,28 @@ class Predictor:
 
         output = lib.ops.Linear.linear('AMOutput', self.output_dim * 2 if self.use_lstm else self.output_dim,
                                        self.nb_class, output)
+
+        if not hasattr(self, 'output'):
+            self.output = [output]
+        else:
+            self.output += [output]
+
+    def _build_seq2seq(self, split_idx):
+        output = self.input_splits[split_idx]
+        for i in range(self.nb_layers):
+            if i == 0:
+                output = OptimizedResBlockDisc1(output, self.nb_emb, self.output_dim,
+                                                resample=None)
+            else:
+                output = resblock('ResBlock%d' % (i), self.output_dim, self.output_dim, self.filter_size, output,
+                                  None, self.is_training_ph, use_bn=self.use_bn, r=self.residual_connection)
+
+        # aggregate conv feature maps
+        output = tf.reduce_mean(output, axis=[2])  # more clever attention mechanism for weighting the contribution
+
+        encoder_outputs, encoder_states = BiLSTMEncoder('Encoder', self.output_dim, output, self.max_size[0])
+        decoder_outputs, decoder_states = AttentionDecoder('Decoder', encoder_outputs, encoder_states, 8)
+        output = lib.ops.Linear.linear('MapToOutputEmb', self.output_dim * 2, self.nb_class, decoder_outputs)
 
         if not hasattr(self, 'output'):
             self.output = [output]
@@ -239,6 +266,7 @@ class Predictor:
         size_train = len(X)
         iters_per_epoch = size_train // batch_size + (0 if size_train % batch_size == 0 else 1)
         best_dev_cost = np.inf
+        best_dev_acc = 0
         lib.plot.set_output_dir(output_dir)
         for epoch in range(epochs):
             permute = np.random.permutation(np.arange(size_train))
@@ -274,10 +302,14 @@ class Predictor:
             lib.plot.flush()
             lib.plot.tick()
 
-            if dev_cost < best_dev_cost:
-                best_dev_cost = dev_cost
+            # if dev_cost < best_dev_cost:
+            #     best_dev_cost = dev_cost
+            #     save_path = self.saver.save(self.sess, checkpoints_dir, global_step=epoch)
+            #     print('Validation cost improved. Saved to path %s\n' % (save_path), flush=True)
+            if dev_sample_acc > best_dev_acc:
+                best_dev_acc = dev_sample_acc
                 save_path = self.saver.save(self.sess, checkpoints_dir, global_step=epoch)
-                print('Validation cost improved. Saved to path %s\n' % (save_path), flush=True)
+                print('Validation sample acc improved. Saved to path %s\n' % (save_path), flush=True)
             else:
                 print('\n', flush=True)
 

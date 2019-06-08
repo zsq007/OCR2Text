@@ -19,18 +19,18 @@ FLAGS = tf.app.flags.FLAGS
 
 BATCH_SIZE = 200 * FLAGS.nb_gpus  if FLAGS.nb_gpus > 0 else 200
 EPOCHS = FLAGS.epochs  # How many iterations to train for
-N_EMB = 3 # 3 channels for images
+N_EMB = 3 # 3 channels for augmented images
 DEVICES = ['/gpu:%d' % (i) for i in range(FLAGS.nb_gpus)] if FLAGS.nb_gpus > 0 else ['/cpu:0']
 
 dataset = lib.dataloader.load_ocr_dataset(use_cross_validation=FLAGS.use_cross_validation)
 N_CLASS = len(lib.dataloader.all_allowed_characters)
 
-arch = 0
+arch = 1
 use_bn = True
 use_lstm = True
-nb_layers = 6
+nb_layers = 2
 filter_size = 3
-output_dim = 16
+output_dim = 32
 learning_rate = 2e-4
 
 HParams = ['arch', 'use_bn', 'use_lstm', 'nb_layers', 'filter_size', 'output_dim', 'learning_rate']
