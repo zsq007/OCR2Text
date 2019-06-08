@@ -32,9 +32,7 @@ class Predictor:
         self.filter_size = kwargs.get('filter_size', 3)
         self.residual_connection = kwargs.get('residual_connection', 1.0)
         self.output_dim = kwargs.get('output_dim', 32)
-        self.att_dim = kwargs.get('att_dim', 50)
-        self.l2_reg_coeff = kwargs.get('l2_reg_coeff', 1e-8)
-        self.learning_rate = kwargs.get('learning_rate', 1e-3)
+        self.learning_rate = kwargs.get('learning_rate', 2e-4)
 
         self.g = tf.Graph()
         with self.g.as_default():
