@@ -31,12 +31,48 @@ def determine_largest_size(path_images):
     return max_size
 
 
-def load_and_preprocess_image(path, max_size):
-    image = tf.read_file(path)
-    image = tf.image.decode_jpeg(image, channels=3)
-    image = tf.image.resize_images(image, max_size)
-    image /= 255.0  # normalize to [0,1] range
-    return image
+# def load_and_preprocess_image(path, max_size):
+#     image = tf.read_file(path)
+#     image = tf.image.decode_jpeg(image, channels=3)
+#     image = tf.image.resize_images(image, max_size)
+#     image /= 255.0  # normalize to [0,1] range
+#     return image
+
+
+def load_and_preprocess_image(path_images):
+    if max_size is None:
+        raise ValueError('Need to determine a consensus size!')
+    all_images = []
+    for img_ph in path_images:
+        im = Image.open(img_ph)
+        size = list(im.size)
+        img_data = np.array(im.getdata()).reshape([*size, 3]) / 255.
+
+        if size[0] != max_size[0]:
+            left = abs(max_size[0] - size[0]) // 2
+            right = abs(max_size[0] - size[0]) - left
+
+            if size[0] < max_size[0]:
+                img_data = np.concatenate(
+                    [np.zeros((left, size[1], 3)), img_data, np.zeros((right, size[1], 3))], axis=0)
+            else:
+                img_data = img_data[left:size[0]-right,:,:]
+        size[0] = max_size[0]
+
+        if size[1] != max_size[1]:
+            top = abs(max_size[1] - size[1]) // 2
+            down = abs(max_size[1] - size[1]) - top
+
+            if size[1] < max_size[1]:
+                img_data = np.concatenate(
+                    [np.zeros((size[0], top, 3)), img_data, np.zeros((size[0], down, 3))], axis=1)
+            else:
+                img_data = img_data[:, top:size[1] - down, :]
+        size[1] = max_size[1]
+
+        all_images.append(img_data)
+    all_labeled_images = np.stack(all_images)
+    return all_labeled_images
 
 
 def load_ocr_dataset(**kwargs):
@@ -51,9 +87,10 @@ def load_ocr_dataset(**kwargs):
     # we need uniform length of the input to enable batch optimziation
     all_labeled_images = glob.glob(os.path.join(dataset_dir, '*.jpg'))
     all_expr_images = glob.glob(os.path.join(expr_data_dir, '*.jpg'))
-    global max_size, image_load_func
+    global max_size
     max_size = determine_largest_size(all_labeled_images + all_expr_images)
-    image_load_func = partial(load_and_preprocess_image, max_size=max_size)
+    # global image_load_func
+    # image_load_func = partial(load_and_preprocess_image, max_size=max_size)
 
     # load all training targets and ids
     all_targets = []
@@ -74,7 +111,8 @@ def load_ocr_dataset(**kwargs):
     all_ids = np.array(all_ids)
 
     # sort the images with the order of the targets
-    all_labeled_images = np.array([os.path.join(dataset_dir, id) for id in all_ids])
+    # load all images
+    all_labeled_images = load_and_preprocess_image(np.array([os.path.join(dataset_dir, id) for id in all_ids]))
 
     # initial shuffle
     total_size = len(all_labeled_images)
@@ -121,12 +159,32 @@ def load_expr_data():
         lines = file.readlines()[1:]
         for line in lines:
             all_ids.append(line.rstrip().split(';')[0])
-    all_expr_images = [os.path.join(expr_data_dir, id) for id in all_ids]
-    return all_expr_images, all_ids
+    return load_and_preprocess_image([os.path.join(expr_data_dir, id) for id in all_ids]), \
+           all_ids
 
 
 if __name__ == "__main__":
     dataset = load_ocr_dataset(use_cross_validation=False)
-    print(dataset['train_ids'])
-    print(dataset['train_images'])
+    print(dataset['train_images'].shape)
     print(dataset['train_targets'])
+
+    all_expr_images, all_expr_ids = load_expr_data()
+    print(all_expr_images.shape)
+    print(all_expr_ids)
+
+    # image_ds = tf.data.Dataset.from_tensor_slices(dataset['train_images']).map(image_load_func, num_parallel_calls=6)
+    # label_ds = tf.data.Dataset.from_tensor_slices(dataset['train_targets'])
+    # image_label_ds = tf.data.Dataset.zip((image_ds, label_ds))
+    #
+    # ds = image_label_ds.shuffle(buffer_size=len(dataset['train_ids']))
+    # ds = ds.repeat()
+    # ds = ds.batch(200)
+    # # `prefetch` lets the dataset fetch batches, in the background while the model is training.
+    # ds = ds.prefetch(buffer_size=6)
+    #
+    # iterator = ds.make_one_shot_iterator()
+    #
+    # sess = tf.Session()
+    # print(sess.run(iterator.get_next()))
+    # iterator = ds.make_one_shot_iterator()
+    # print(sess.run(iterator.get_next()))

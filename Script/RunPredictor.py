@@ -1,7 +1,6 @@
 import os
 import sys
 import datetime
-import itertools
 import numpy as np
 import tensorflow as tf
 
@@ -10,7 +9,6 @@ sys.path.append(basedir)
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import lib.dataloader
-from lib.logger import CSVLogger
 from Model.Predictor_Parallel import Predictor
 
 tf.app.flags.DEFINE_string('output_dir', '', '')
@@ -22,7 +20,7 @@ FLAGS = tf.app.flags.FLAGS
 BATCH_SIZE = 200 * FLAGS.nb_gpus  if FLAGS.nb_gpus > 0 else 200
 EPOCHS = FLAGS.epochs  # How many iterations to train for
 N_EMB = 3 # 3 channels for images
-DEVICES = ['/gpu:%d' % (i) for i in range(FLAGS.nb_gpus)]
+DEVICES = ['/gpu:%d' % (i) for i in range(FLAGS.nb_gpus)] if FLAGS.nb_gpus > 0 else ['/cpu:0']
 
 dataset = lib.dataloader.load_ocr_dataset(use_cross_validation=FLAGS.use_cross_validation)
 N_CLASS = len(lib.dataloader.all_allowed_characters)
@@ -45,78 +43,79 @@ print('Building model with hyper-parameters\n', hp)
 
 cur_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 if FLAGS.output_dir == '':
-    output_dir = os.path.join('output', 'RSCV', cur_time)
+    output_dir = os.path.join('output', cur_time)
 else:
-    output_dir = os.path.join('output', 'RSCV', cur_time + '-' + FLAGS.output_dir)
+    output_dir = os.path.join('output', cur_time + '-' + FLAGS.output_dir)
 os.makedirs(output_dir)
 
-logger = CSVLogger('run.csv', output_dir, HParams + metrics)
+if FLAGS.use_cross_validation:
 
-splits = dataset['splits']
+    # build model
+    model = Predictor(lib.dataloader.max_size, N_EMB, N_CLASS, DEVICES, **hp)
 
-# build model
-model = Predictor(lib.dataloader.max_size, N_EMB, N_CLASS, DEVICES, **hp)
-model_dir = os.path.join(output_dir, 'run-%d' % (0))
-os.makedirs(model_dir)
-cost, char_acc, sample_acc = 0., 0., 0.
-all_targets = []
-all_predictions = []
+    cost, char_acc, sample_acc = 0., 0., 0.
+    splits = dataset['splits']
 
-for fold, (train_idx, test_idx) in enumerate(splits_touse):
-    fold_dir = os.path.join(model_dir, 'fold-%d' % (fold))
-    os.makedirs(fold_dir)
-    model.fit(dataset['data'][train_idx], dataset['targets'][train_idx], EPOCHS, BATCH_SIZE, fold_dir)
+    for fold, (train_idx, test_idx) in enumerate(splits):
+        fold_dir = os.path.join(output_dir, 'fold-%d' % (fold))
+        os.makedirs(fold_dir)
 
-    test_rmd = dataset['targets'][test_idx].shape[0] % len(DEVICES)
+        model.fit(dataset['all_images'][train_idx], dataset['all_targets'][train_idx], EPOCHS, BATCH_SIZE, fold_dir)
+
+        test_rmd = dataset['all_images'][test_idx].shape[0] % len(DEVICES)
+        if test_rmd != 0:
+            test_data = dataset['all_images'][test_idx][:-test_rmd]
+            test_targets = dataset['all_targets'][test_idx][:-test_rmd]
+        else:
+            test_data = dataset['all_images'][test_idx]
+            test_targets = dataset['all_targets'][test_idx]
+
+        test_cost, test_char_acc, test_sample_acc = \
+            model.evaluate(test_data, test_targets, BATCH_SIZE)
+
+        cost += test_cost
+        char_acc += test_char_acc
+        sample_acc += test_sample_acc
+
+        model.reset_session()
+    model.delete()
+    del model
+
+    met = {}
+    for metric in metrics:
+        met[metric] = eval(metric) / 5
+    print('Combined fold evaluations', met)
+
+else:
+    # build model
+    model = Predictor(lib.dataloader.max_size, N_EMB, N_CLASS, DEVICES, **hp)
+
+    model.fit(dataset['train_images'], dataset['train_targets'], EPOCHS, BATCH_SIZE, output_dir)
+
+    test_rmd = dataset['test_images'].shape[0] % len(DEVICES)
     if test_rmd != 0:
-        test_data = dataset['data'][test_idx][:-test_rmd]
-        all_targets.append(dataset['targets'][test_idx][:-test_rmd])
+        test_data = dataset['test_images'][:-test_rmd]
+        test_targets = dataset['test_targets'][:-test_rmd]
     else:
-        test_data = dataset['data'][test_idx]
-        all_targets.append(dataset['targets'][test_idx])
-    all_predictions.append(model.predict(test_data, BATCH_SIZE))
+        test_data = dataset['test_images']
+        test_targets = dataset['test_targets']
 
-    test_cost, test_acc, test_pears = model.evaluate(dataset['data'][test_idx], dataset['targets'][test_idx],
-                                                     BATCH_SIZE)
-    cost += test_cost
-    acc += test_acc
-    pears += test_pears
+    cost, char_acc, sample_acc = \
+        model.evaluate(test_data, test_targets, BATCH_SIZE)
 
-    model.reset_session()
-model.delete()
-del model  # release session
-draw_scatter_plots(np.concatenate(all_targets, axis=0), np.concatenate(all_predictions, axis=0),
-                   CLASSES, model_dir)
-met = {}
-for metric in metrics:
-    met[metric] = eval(metric) / 5
-print('Combined fold evaluations', met)
-hp.update(met)
-logger.update_with_dict(hp)
+    print('Held-out train-test split evaluations, %.3f, %.3f, %.3f' % (cost, char_acc, sample_acc))
 
-logger.close()
+all_expr_images, all_expr_ids = lib.dataloader.load_expr_data()
+predictions = model.predict(all_expr_images, BATCH_SIZE)
 
-
-
-path_ds = tf.data.Dataset.from_tensor_slices(all_train_images)
-    label_ds = tf.data.Dataset.from_tensor_slices(all_targets)
-    image_ds = path_ds.map(image_load_func, num_parallel_calls=6)
-    image_label_ds = tf.data.Dataset.zip((image_ds, label_ds))
-
-    # print('image shape: ', image_label_ds.output_shapes[0])
-    # print('label shape: ', image_label_ds.output_shapes[1])
-    # print('types: ', image_label_ds.output_types)
-    # print()
-    # print(image_label_ds)
-
-
-BATCH_SIZE = 256
-
-# Setting a shuffle buffer size as large as the dataset ensures that the data is
-# completely shuffled.
-ds = image_label_ds.shuffle(buffer_size=image_count)
-ds = ds.repeat()
-ds = ds.batch(BATCH_SIZE)
-# `prefetch` lets the dataset fetch batches, in the background while the model is training.
-ds = ds.prefetch(buffer_size=AUTOTUNE)
-ds
+outfile = open(os.path.join(output_dir, 'validation_set_values.txt'), 'w')
+outfile.write('filename;value\n')
+# decode step
+for pred, id in zip(predictions, all_expr_ids):
+    decoded_digits = [lib.dataloader.all_allowed_characters[pos] for pos in np.argmax(pred, axis=-1)]
+    cutoff = decoded_digits.index('!')
+    decoded = ''.join(decoded_digits[:cutoff])
+    print('%s : %s' % (id, decoded))
+    outfile.write('%s;%s\n' % (id, decoded))
+    outfile.flush()
+outfile.close()

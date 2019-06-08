@@ -49,7 +49,6 @@ class Predictor:
             self._stats()
             self.saver = tf.train.Saver(max_to_keep=100)
             self.init = tf.global_variables_initializer()
-            self.local_init = tf.local_variables_initializer()  # only pearson local variables
         self._init_session()
 
     def _placeholders(self):
@@ -212,14 +211,12 @@ class Predictor:
         gpu_options.allow_growth = True
         self.sess = tf.Session(graph=self.g, config=tf.ConfigProto(gpu_options=gpu_options))
         self.sess.run(self.init)
-        self.sess.run(self.local_init)
 
     def reset_session(self):
         del self.saver
         with self.g.as_default():
             self.saver = tf.train.Saver(max_to_keep=100)
         self.sess.run(self.init)
-        self.sess.run(self.local_init)
         lib.plot.reset()
 
     def fit(self, X, y, epochs, batch_size, output_dir):
@@ -264,18 +261,15 @@ class Predictor:
                                          self.is_training_ph: True}
                               )
 
-            lib.plot.plot('time', (time.time() - start_time) / iters_per_epoch)
-            train_cost, train_acc, train_pears = self.evaluate(train_data, train_targets, batch_size)
+            train_cost, train_char_acc, train_sample_acc = self.evaluate(train_data, train_targets, batch_size)
             lib.plot.plot('train_cost', train_cost)
-            lib.plot.plot('train_acc', train_acc)
-            for i in range(self.nb_class):
-                lib.plot.plot('train_pears_fraction_%d' % (i), train_pears[i])
+            lib.plot.plot('train_char_acc', train_char_acc)
+            lib.plot.plot('train_sample_acc', train_sample_acc)
 
-            dev_cost, dev_acc, dev_pears = self.evaluate(dev_data, dev_targets, batch_size)
+            dev_cost, dev_char_acc, dev_sample_acc = self.evaluate(dev_data, dev_targets, batch_size)
             lib.plot.plot('dev_cost', dev_cost)
-            lib.plot.plot('dev_acc', dev_acc)
-            for i in range(self.nb_class):
-                lib.plot.plot('dev_pears_fraction_%d' % (i), dev_pears[i])
+            lib.plot.plot('dev_char_acc', dev_char_acc)
+            lib.plot.plot('dev_sample_acc', dev_sample_acc)
 
             lib.plot.flush()
             lib.plot.tick()
@@ -292,30 +286,28 @@ class Predictor:
 
     def evaluate(self, X, y, batch_size):
         iters_per_epoch = len(X) // batch_size + (0 if len(X) % batch_size == 0 else 1)
-        all_cost, all_acc = 0., 0.,
+        all_cost, all_char_acc, all_sample_acc = 0., 0., 0.,
         for i in range(iters_per_epoch):
             _data, _labels = X[i * batch_size: (i + 1) * batch_size], \
                              y[i * batch_size: (i + 1) * batch_size]
-            _cost, _acc, _ \
-                = self.sess.run([self.cost, self.acc, self.pearson_update_op],
+            _cost, _char_acc, _sample_acc \
+                = self.sess.run([self.cost, self.char_acc, self.sample_acc],
                                 feed_dict={self.input_ph: _data,
                                            self.labels: _labels,
                                            self.is_training_ph: False}
                                 )
             all_cost += _cost * _data.shape[0]
-            all_acc += _acc * _data.shape[0]
-        all_pears = np.array(self.sess.run(self.pears))
-        self.sess.run(self.local_init)
-        return all_cost / len(X), all_acc / len(X), all_pears
+            all_char_acc += _char_acc * _data.shape[0]
+            all_sample_acc += _sample_acc * _data.shape[0]
+        return all_cost / len(X), all_char_acc / len(X), all_sample_acc / len(X)
 
     def predict(self, X, batch_size):
-        stub = self.input_ph if len(X.shape) == 2 else self.input
         all_predictions = []
         iters_per_epoch = len(X) // batch_size + (0 if len(X) % batch_size == 0 else 1)
         for i in range(iters_per_epoch):
             _data = X[i * batch_size: (i + 1) * batch_size]
             _prediction = self.sess.run(self.prediction,
-                                        {stub: _data,
+                                        {self.input_ph: _data,
                                          self.is_training_ph: False})
             all_predictions.append(_prediction)
         return np.concatenate(all_predictions, axis=0)
